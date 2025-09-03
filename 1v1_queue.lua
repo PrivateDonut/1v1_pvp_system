@@ -49,7 +49,18 @@ local CONFIG = {
     MSG_FIGHT = "|cFFFFFF00FIGHT!|r",         -- Yellow colored FIGHT message
     
     -- Round End Messages
-    MSG_ROUND_WINNER = "|cFF00FF00%s wins the round!|r"  -- Green colored winner message
+    MSG_ROUND_WINNER = "|cFF00FF00%s wins the round!|r",  -- Green colored winner message
+    
+    -- Match Settings
+    WINNING_SCORE = 2,                         -- Number of rounds needed to win a match (best of 3)
+    
+    -- Match End Messages
+    MSG_MATCH_WINNER = "|cFFFFD700%s has won the match %d-%d!|r",  -- Golden colored final winner message
+    MSG_NEXT_ROUND = "|cFF00FFFF Round %d starting soon...|r",      -- Cyan colored next round message
+    MSG_CURRENT_SCORE = "|cFFFFFFFF Score: %s [%d] - [%d] %s|r",   -- White colored score update
+    
+    -- Round Transition Settings
+    ROUND_TRANSITION_DELAY = 2000              -- Delay before starting next round (in milliseconds)
 }
 
 -- ==========================================
@@ -155,7 +166,113 @@ local function findActiveMatchByPlayer(playerGuid)
     return nil
 end
 
-local function handleRoundEnd(winnerGuid, loserGuid, match)
+local function endMatch(match, matchIndex)
+    local player1 = GetPlayerByGUID(match.player1.guid)
+    local player2 = GetPlayerByGUID(match.player2.guid)
+    
+    -- Determine winner and final score
+    local winner, loser, winnerScore, loserScore
+    if match.player1.score >= CONFIG.WINNING_SCORE then
+        winner = player1
+        loser = player2
+        winnerScore = match.player1.score
+        loserScore = match.player2.score
+    else
+        winner = player2
+        loser = player1
+        winnerScore = match.player2.score
+        loserScore = match.player1.score
+    end
+    
+    -- Announce match winner
+    if winner and loser then
+        local winnerName = winner:GetName()
+        local message = string.format(CONFIG.MSG_MATCH_WINNER, winnerName, winnerScore, loserScore)
+        sendMessage(winner, message)
+        sendMessage(loser, message)
+        
+        if winner:IsDead() then
+            winner:ResurrectPlayer(1.0)
+        end
+        if loser:IsDead() then
+            loser:ResurrectPlayer(1.0)
+        end
+        
+        winner:SetHealth(winner:GetMaxHealth())
+        winner:SetPower(winner:GetMaxPower(0), 0)
+        loser:SetHealth(loser:GetMaxHealth())
+        loser:SetPower(loser:GetMaxPower(0), 0)
+        
+        winner:RemoveAura(CONFIG.ROOT_AURA_ID)
+        loser:RemoveAura(CONFIG.ROOT_AURA_ID)
+        
+        -- Teleport players back to their original locations
+        local loc1 = match.player1.originalLocation
+        local loc2 = match.player2.originalLocation
+        
+        if player1 then
+            player1:Teleport(loc1.mapId, loc1.x, loc1.y, loc1.z, loc1.o)
+        end
+        if player2 then
+            player2:Teleport(loc2.mapId, loc2.x, loc2.y, loc2.z, loc2.o)
+        end
+    end
+    table.remove(activeMatches, matchIndex)
+end
+
+local function prepareNextRound(match)
+    local player1 = GetPlayerByGUID(match.player1.guid)
+    local player2 = GetPlayerByGUID(match.player2.guid)
+    
+    if not player1 or not player2 then
+        return
+    end
+    
+    match.currentRound = match.currentRound + 1
+    
+    -- Announce current score
+    local player1Name = player1:GetName()
+    local player2Name = player2:GetName()
+    local scoreMessage = string.format(CONFIG.MSG_CURRENT_SCORE, 
+        player1Name, match.player1.score, match.player2.score, player2Name)
+    sendMessage(player1, scoreMessage)
+    sendMessage(player2, scoreMessage)
+    
+    local roundMessage = string.format(CONFIG.MSG_NEXT_ROUND, match.currentRound)
+    sendMessage(player1, roundMessage)
+    sendMessage(player2, roundMessage)
+    
+    if player1:IsDead() then
+        player1:ResurrectPlayer(1.0)
+    end
+    if player2:IsDead() then
+        player2:ResurrectPlayer(1.0)
+    end
+
+    player1:SetHealth(player1:GetMaxHealth())
+    player1:SetPower(player1:GetMaxPower(0), 0)
+    player2:SetHealth(player2:GetMaxHealth())
+    player2:SetPower(player2:GetMaxPower(0), 0)
+    
+    player1:ResetAllCooldowns()
+    player2:ResetAllCooldowns()
+    
+    player1:Teleport(CONFIG.ARENA_MAP_ID, CONFIG.ARENA_PLAYER1_X, CONFIG.ARENA_PLAYER1_Y, CONFIG.ARENA_PLAYER1_Z, CONFIG.ARENA_PLAYER1_O)
+    player2:Teleport(CONFIG.ARENA_MAP_ID, CONFIG.ARENA_PLAYER2_X, CONFIG.ARENA_PLAYER2_Y, CONFIG.ARENA_PLAYER2_Z, CONFIG.ARENA_PLAYER2_O)
+    
+    -- Apply root and start countdown after a delay
+    CreateLuaEvent(function()
+        local p1 = GetPlayerByGUID(match.player1.guid)
+        local p2 = GetPlayerByGUID(match.player2.guid)
+        if p1 and p2 then
+            p1:AddAura(CONFIG.ROOT_AURA_ID, p1)
+            p2:AddAura(CONFIG.ROOT_AURA_ID, p2)
+            startCountdown(match.player1.guid, match.player2.guid, CONFIG.COUNTDOWN_DURATION)
+        end
+    end, CONFIG.ROUND_TRANSITION_DELAY, 1)
+end
+
+local function handleRoundEnd(winnerGuid, loserGuid, match, matchIndex)
     local winner = GetPlayerByGUID(winnerGuid)
     local loser = GetPlayerByGUID(loserGuid)
     
@@ -163,32 +280,30 @@ local function handleRoundEnd(winnerGuid, loserGuid, match)
         return
     end
     
-    -- Announce the round winner
+    if match.player1.guid == winnerGuid then
+        match.player1.score = match.player1.score + 1
+    else
+        match.player2.score = match.player2.score + 1
+    end
+    
     local winnerName = winner:GetName()
     local message = string.format(CONFIG.MSG_ROUND_WINNER, winnerName)
     sendMessage(winner, message)
     sendMessage(loser, message)
     
-    -- Resurrect the dead player
-    loser:ResurrectPlayer(1.0)
+    -- Resurrect the loser with a small delay to ensure death state is processed
+    CreateLuaEvent(function()
+        local loserPlayer = GetPlayerByGUID(loserGuid)
+        if loserPlayer and loserPlayer:IsDead() then
+            loserPlayer:ResurrectPlayer(100, false)
+        end
+    end, 500, 1)  -- 500ms delay, run once
     
-    -- Heal both players to full health and mana
-    winner:SetHealth(winner:GetMaxHealth())
-    winner:SetPower(winner:GetMaxPower(0), 0)  -- 0 = POWER_MANA
-    loser:SetHealth(loser:GetMaxHealth())
-    loser:SetPower(loser:GetMaxPower(0), 0)  -- 0 = POWER_MANA
-    
-    -- Reset cooldowns for both players
-    winner:ResetAllCooldowns()
-    loser:ResetAllCooldowns()
-    
-    -- Teleport players back to their starting positions
-    if match.player1.guid == winnerGuid then
-        winner:Teleport(CONFIG.ARENA_MAP_ID, CONFIG.ARENA_PLAYER1_X, CONFIG.ARENA_PLAYER1_Y, CONFIG.ARENA_PLAYER1_Z, CONFIG.ARENA_PLAYER1_O)
-        loser:Teleport(CONFIG.ARENA_MAP_ID, CONFIG.ARENA_PLAYER2_X, CONFIG.ARENA_PLAYER2_Y, CONFIG.ARENA_PLAYER2_Z, CONFIG.ARENA_PLAYER2_O)
+    -- Check if someone has won the match
+    if match.player1.score >= CONFIG.WINNING_SCORE or match.player2.score >= CONFIG.WINNING_SCORE then
+        endMatch(match, matchIndex)
     else
-        winner:Teleport(CONFIG.ARENA_MAP_ID, CONFIG.ARENA_PLAYER2_X, CONFIG.ARENA_PLAYER2_Y, CONFIG.ARENA_PLAYER2_Z, CONFIG.ARENA_PLAYER2_O)
-        loser:Teleport(CONFIG.ARENA_MAP_ID, CONFIG.ARENA_PLAYER1_X, CONFIG.ARENA_PLAYER1_Y, CONFIG.ARENA_PLAYER1_Z, CONFIG.ARENA_PLAYER1_O)
+        prepareNextRound(match)
     end
 end
 
@@ -196,12 +311,15 @@ local function createMatch(player1Guid, player2Guid, player1Location, player2Loc
     local matchData = {
         player1 = {
             guid = player1Guid,
-            originalLocation = player1Location
+            originalLocation = player1Location,
+            score = 0
         },
         player2 = {
             guid = player2Guid,
-            originalLocation = player2Location
+            originalLocation = player2Location,
+            score = 0
         },
+        currentRound = 1,
         startTime = os.time()
     }
     table.insert(activeMatches, matchData)
@@ -273,9 +391,8 @@ local function OnGossipSelect(event, player, creature, sender, intid, code)
 end
 
 local function OnPlayerDeath(event, killer, victim)
-    -- Check if the victim is in an active match
     local victimGuid = victim:GetGUID()
-    local match = findActiveMatchByPlayer(victimGuid)
+    local match, matchIndex = findActiveMatchByPlayer(victimGuid)
     
     if not match then
         -- Player is not in a 1v1 match, ignore this death
@@ -299,13 +416,12 @@ local function OnPlayerDeath(event, killer, victim)
     end
     
     -- Handle the round end
-    handleRoundEnd(killerGuid, victimGuid, match)
+    handleRoundEnd(killerGuid, victimGuid, match, matchIndex)
 end
 
 RegisterCreatureGossipEvent(CONFIG.NPC_ID, 1, OnGossipHello)
 RegisterCreatureGossipEvent(CONFIG.NPC_ID, 2, OnGossipSelect)
 
--- Register player death event (event ID 6)
 RegisterPlayerEvent(6, OnPlayerDeath)
 
 CreateLuaEvent(processMatchmaking, CONFIG.MATCHMAKING_INTERVAL, 0)
