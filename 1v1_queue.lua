@@ -181,6 +181,15 @@ local function handleRoundEnd(winnerGuid, loserGuid, match)
     -- Reset cooldowns for both players
     winner:ResetAllCooldowns()
     loser:ResetAllCooldowns()
+    
+    -- Teleport players back to their starting positions
+    if match.player1.guid == winnerGuid then
+        winner:Teleport(CONFIG.ARENA_MAP_ID, CONFIG.ARENA_PLAYER1_X, CONFIG.ARENA_PLAYER1_Y, CONFIG.ARENA_PLAYER1_Z, CONFIG.ARENA_PLAYER1_O)
+        loser:Teleport(CONFIG.ARENA_MAP_ID, CONFIG.ARENA_PLAYER2_X, CONFIG.ARENA_PLAYER2_Y, CONFIG.ARENA_PLAYER2_Z, CONFIG.ARENA_PLAYER2_O)
+    else
+        winner:Teleport(CONFIG.ARENA_MAP_ID, CONFIG.ARENA_PLAYER2_X, CONFIG.ARENA_PLAYER2_Y, CONFIG.ARENA_PLAYER2_Z, CONFIG.ARENA_PLAYER2_O)
+        loser:Teleport(CONFIG.ARENA_MAP_ID, CONFIG.ARENA_PLAYER1_X, CONFIG.ARENA_PLAYER1_Y, CONFIG.ARENA_PLAYER1_Z, CONFIG.ARENA_PLAYER1_O)
+    end
 end
 
 local function createMatch(player1Guid, player2Guid, player1Location, player2Location)
@@ -289,6 +298,7 @@ local function OnPlayerDeath(event, killer, victim)
         return
     end
     
+    -- Handle the round end
     handleRoundEnd(killerGuid, victimGuid, match)
 end
 
