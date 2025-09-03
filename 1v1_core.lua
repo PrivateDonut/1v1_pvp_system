@@ -60,7 +60,18 @@ local CONFIG = {
     MSG_CURRENT_SCORE = "|cFFFFFFFF Score: %s [%d] - [%d] %s|r",   -- White colored score update
     
     -- Round Transition Settings
-    ROUND_TRANSITION_DELAY = 2000              -- Delay before starting next round (in milliseconds)
+    ROUND_TRANSITION_DELAY = 2000,              -- Delay before starting next round (in milliseconds)
+    
+    -- Logout/Disconnect Messages
+    MSG_REMOVED_FROM_QUEUE = "You have been removed from the 1v1 queue due to logout.",
+    MSG_OPPONENT_FORFEITED = "|cFFFFD700Your opponent has disconnected. You win by forfeit!|r",
+    MSG_FORFEIT_LOSS = "|cFFFF0000You forfeited the match by disconnecting.|r",
+    
+    -- Status Command Messages
+    MSG_STATUS_IN_QUEUE = "You are in the 1v1 queue. Position: %d of %d",
+    MSG_STATUS_IN_MATCH = "You are currently in a 1v1 match. Score: %s [%d] - [%d] %s",
+    MSG_STATUS_NOT_IN_SYSTEM = "You are not in the queue or any active match.",
+    MSG_COMMAND_USAGE = "Usage: .1v1 status - Check your queue position or match status"
 }
 
 -- ==========================================
@@ -98,6 +109,15 @@ local function isPlayerInQueue(playerGuid)
         end
     end
     return false
+end
+
+local function getQueuePosition(playerGuid)
+    for i = 1, #pvpQueue do
+        if pvpQueue[i] == playerGuid then
+            return i
+        end
+    end
+    return nil
 end
 
 local function removePlayerFromQueue(playerGuid)
@@ -164,6 +184,48 @@ local function findActiveMatchByPlayer(playerGuid)
         end
     end
     return nil
+end
+
+local function forfeitMatch(match, matchIndex, forfeitingPlayerGuid)
+    local player1 = GetPlayerByGUID(match.player1.guid)
+    local player2 = GetPlayerByGUID(match.player2.guid)
+    
+    local winner, loser, winnerLocation, loserLocation
+    
+    -- Determine winner and loser based on who forfeited
+    if match.player1.guid == forfeitingPlayerGuid then
+        winner = player2
+        loser = player1
+        winnerLocation = match.player2.originalLocation
+        loserLocation = match.player1.originalLocation
+    else
+        winner = player1
+        loser = player2
+        winnerLocation = match.player1.originalLocation
+        loserLocation = match.player2.originalLocation
+    end
+    
+    -- Send messages to the winner
+    if winner then
+        sendMessage(winner, CONFIG.MSG_OPPONENT_FORFEITED)
+        
+        -- Resurrect and heal winner if needed
+        if winner:IsDead() then
+            winner:ResurrectPlayer(1.0)
+        end
+        winner:SetHealth(winner:GetMaxHealth())
+        winner:SetPower(winner:GetMaxPower(0), 0)
+        winner:RemoveAura(CONFIG.ROOT_AURA_ID)
+        
+        -- Teleport winner back
+        winner:Teleport(winnerLocation.mapId, winnerLocation.x, winnerLocation.y, winnerLocation.z, winnerLocation.o)
+    end
+    
+    -- Note: loser is already disconnected, so we can't send messages or teleport them
+    -- They will receive the forfeit message when they log back in if we implement persistent tracking
+    
+    -- Remove the match from active matches
+    table.remove(activeMatches, matchIndex)
 end
 
 local function endMatch(match, matchIndex)
@@ -419,9 +481,81 @@ local function OnPlayerDeath(event, killer, victim)
     handleRoundEnd(killerGuid, victimGuid, match, matchIndex)
 end
 
+local function OnPlayerLogout(event, player)
+    local playerGuid = player:GetGUID()
+    
+    -- Check if player is in queue
+    if removePlayerFromQueue(playerGuid) then
+        -- Player was in queue and has been removed
+        -- We can't send them a message since they're logging out
+        -- But we've cleaned up the queue
+    end
+    
+    -- Check if player is in an active match
+    local match, matchIndex = findActiveMatchByPlayer(playerGuid)
+    if match then
+        -- Player is in a match - they forfeit
+        forfeitMatch(match, matchIndex, playerGuid)
+    end
+end
+
+local function OnPlayerCommand(event, player, command, chatHandler)
+    -- Check if command starts with "1v1"
+    if command:find("^1v1") then
+        local args = {}
+        for word in command:gmatch("%S+") do
+            table.insert(args, word:lower())
+        end
+        
+        -- Check for status command
+        if args[2] == "status" then
+            local playerGuid = player:GetGUID()
+            
+            -- Check if in queue
+            local queuePosition = getQueuePosition(playerGuid)
+            if queuePosition then
+                local message = string.format(CONFIG.MSG_STATUS_IN_QUEUE, queuePosition, #pvpQueue)
+                sendMessage(player, message)
+                return false  -- Prevent default command handling
+            end
+            
+            -- Check if in match
+            local match = findActiveMatchByPlayer(playerGuid)
+            if match then
+                local player1 = GetPlayerByGUID(match.player1.guid)
+                local player2 = GetPlayerByGUID(match.player2.guid)
+                
+                if player1 and player2 then
+                    local player1Name = player1:GetName()
+                    local player2Name = player2:GetName()
+                    local message = string.format(CONFIG.MSG_STATUS_IN_MATCH,
+                        player1Name, match.player1.score, match.player2.score, player2Name)
+                    sendMessage(player, message)
+                else
+                    sendMessage(player, "You are in a match but opponent information is unavailable.")
+                end
+                return false  -- Prevent default command handling
+            end
+            
+            -- Not in queue or match
+            sendMessage(player, CONFIG.MSG_STATUS_NOT_IN_SYSTEM)
+            return false  -- Prevent default command handling
+        else
+            -- Show usage for unrecognized 1v1 commands
+            sendMessage(player, CONFIG.MSG_COMMAND_USAGE)
+            return false  -- Prevent default command handling
+        end
+    end
+    
+    -- Let other commands pass through
+    return true
+end
+
 RegisterCreatureGossipEvent(CONFIG.NPC_ID, 1, OnGossipHello)
 RegisterCreatureGossipEvent(CONFIG.NPC_ID, 2, OnGossipSelect)
 
 RegisterPlayerEvent(6, OnPlayerDeath)
+RegisterPlayerEvent(4, OnPlayerLogout)
+RegisterPlayerEvent(42, OnPlayerCommand)
 
 CreateLuaEvent(processMatchmaking, CONFIG.MATCHMAKING_INTERVAL, 0)
