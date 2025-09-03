@@ -71,7 +71,12 @@ local CONFIG = {
     MSG_STATUS_IN_QUEUE = "You are in the 1v1 queue. Position: %d of %d",
     MSG_STATUS_IN_MATCH = "You are currently in a 1v1 match. Score: %s [%d] - [%d] %s",
     MSG_STATUS_NOT_IN_SYSTEM = "You are not in the queue or any active match.",
-    MSG_COMMAND_USAGE = "Usage: .1v1 status - Check your queue position or match status"
+    MSG_COMMAND_USAGE = "Usage: .1v1 status - Check your queue position or match status",
+    
+    -- Arena Area Settings
+    ARENA_AREA_ID = 2177,                      -- Gurubashi Arena area ID
+    MSG_LEFT_ARENA_FORFEIT = "|cFFFF0000%s has left the arena and forfeited the match!|r",
+    MSG_LEFT_ARENA_WARNING = "|cFFFF8800You have left the arena! You forfeit!|r"
 }
 
 -- ==========================================
@@ -186,7 +191,7 @@ local function findActiveMatchByPlayer(playerGuid)
     return nil
 end
 
-local function forfeitMatch(match, matchIndex, forfeitingPlayerGuid)
+local function forfeitMatch(match, matchIndex, forfeitingPlayerGuid, reason)
     local player1 = GetPlayerByGUID(match.player1.guid)
     local player2 = GetPlayerByGUID(match.player2.guid)
     
@@ -205,11 +210,19 @@ local function forfeitMatch(match, matchIndex, forfeitingPlayerGuid)
         loserLocation = match.player2.originalLocation
     end
     
-    -- Send messages to the winner
+    -- Send appropriate message to the winner based on reason
     if winner then
-        sendMessage(winner, CONFIG.MSG_OPPONENT_FORFEITED)
+        local message
+        if reason == "left_arena" then
+            -- Player left the arena - use the arena-specific message
+            local loserName = loser and loser:GetName() or "Your opponent"
+            message = string.format(CONFIG.MSG_LEFT_ARENA_FORFEIT, loserName)
+        else
+            -- Default to disconnect message
+            message = CONFIG.MSG_OPPONENT_FORFEITED
+        end
+        sendMessage(winner, message)
         
-        -- Resurrect and heal winner if needed
         if winner:IsDead() then
             winner:ResurrectPlayer(1.0)
         end
@@ -220,11 +233,6 @@ local function forfeitMatch(match, matchIndex, forfeitingPlayerGuid)
         -- Teleport winner back
         winner:Teleport(winnerLocation.mapId, winnerLocation.x, winnerLocation.y, winnerLocation.z, winnerLocation.o)
     end
-    
-    -- Note: loser is already disconnected, so we can't send messages or teleport them
-    -- They will receive the forfeit message when they log back in if we implement persistent tracking
-    
-    -- Remove the match from active matches
     table.remove(activeMatches, matchIndex)
 end
 
@@ -359,7 +367,7 @@ local function handleRoundEnd(winnerGuid, loserGuid, match, matchIndex)
         if loserPlayer and loserPlayer:IsDead() then
             loserPlayer:ResurrectPlayer(100, false)
         end
-    end, 500, 1)  -- 500ms delay, run once
+    end, 500, 1)
     
     -- Check if someone has won the match
     if match.player1.score >= CONFIG.WINNING_SCORE or match.player2.score >= CONFIG.WINNING_SCORE then
@@ -477,7 +485,6 @@ local function OnPlayerDeath(event, killer, victim)
         return
     end
     
-    -- Handle the round end
     handleRoundEnd(killerGuid, victimGuid, match, matchIndex)
 end
 
@@ -486,16 +493,48 @@ local function OnPlayerLogout(event, player)
     
     -- Check if player is in queue
     if removePlayerFromQueue(playerGuid) then
-        -- Player was in queue and has been removed
-        -- We can't send them a message since they're logging out
-        -- But we've cleaned up the queue
+
     end
     
     -- Check if player is in an active match
     local match, matchIndex = findActiveMatchByPlayer(playerGuid)
     if match then
-        -- Player is in a match - they forfeit
-        forfeitMatch(match, matchIndex, playerGuid)
+        -- Player is in a match - they forfeit due to disconnect
+        forfeitMatch(match, matchIndex, playerGuid, "disconnect")
+    end
+end
+
+local function OnPlayerUpdateArea(event, player, oldArea, newArea)
+    local playerGuid = player:GetGUID()
+    
+    -- Check if player is in an active match
+    local match, matchIndex = findActiveMatchByPlayer(playerGuid)
+    if not match then
+        return  -- Not in a match, ignore area changes
+    end
+    
+    -- Check if player left the arena
+    if oldArea == CONFIG.ARENA_AREA_ID and newArea ~= CONFIG.ARENA_AREA_ID then
+        -- Player left the arena during a match - they forfeit
+        local playerName = player:GetName()
+        
+        -- Notify both players
+        local opponent
+        if match.player1.guid == playerGuid then
+            opponent = GetPlayerByGUID(match.player2.guid)
+        else
+            opponent = GetPlayerByGUID(match.player1.guid)
+        end
+        
+        if opponent then
+            local forfeitMsg = string.format(CONFIG.MSG_LEFT_ARENA_FORFEIT, playerName)
+            sendMessage(opponent, forfeitMsg)
+        end
+        
+        sendMessage(player, CONFIG.MSG_LEFT_ARENA_WARNING)
+        
+        -- Forfeit the match due to leaving arena
+        forfeitMatch(match, matchIndex, playerGuid, "left_arena")
     end
 end
 
@@ -507,7 +546,6 @@ local function OnPlayerCommand(event, player, command, chatHandler)
             table.insert(args, word:lower())
         end
         
-        -- Check for status command
         if args[2] == "status" then
             local playerGuid = player:GetGUID()
             
@@ -534,20 +572,17 @@ local function OnPlayerCommand(event, player, command, chatHandler)
                 else
                     sendMessage(player, "You are in a match but opponent information is unavailable.")
                 end
-                return false  -- Prevent default command handling
+                return false 
             end
-            
-            -- Not in queue or match
+
             sendMessage(player, CONFIG.MSG_STATUS_NOT_IN_SYSTEM)
             return false  -- Prevent default command handling
         else
             -- Show usage for unrecognized 1v1 commands
             sendMessage(player, CONFIG.MSG_COMMAND_USAGE)
-            return false  -- Prevent default command handling
+            return false 
         end
     end
-    
-    -- Let other commands pass through
     return true
 end
 
@@ -557,5 +592,6 @@ RegisterCreatureGossipEvent(CONFIG.NPC_ID, 2, OnGossipSelect)
 RegisterPlayerEvent(6, OnPlayerDeath)
 RegisterPlayerEvent(4, OnPlayerLogout)
 RegisterPlayerEvent(42, OnPlayerCommand)
+RegisterPlayerEvent(47, OnPlayerUpdateArea)
 
 CreateLuaEvent(processMatchmaking, CONFIG.MATCHMAKING_INTERVAL, 0)
