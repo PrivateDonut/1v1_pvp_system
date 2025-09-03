@@ -29,17 +29,24 @@ local CONFIG = {
     
     -- Arena Settings (Gurubashi Arena)
     ARENA_MAP_ID = 0,                          -- Eastern Kingdoms map ID
-    ARENA_PLAYER1_X = -13224,                  -- Player 1 X coordinate
-    ARENA_PLAYER1_Y = 227,                     -- Player 1 Y coordinate
-    ARENA_PLAYER1_Z = 33,                      -- Player 1 Z coordinate (estimated)
-    ARENA_PLAYER1_O = 0,                       -- Player 1 orientation (facing north)
-    ARENA_PLAYER2_X = -13224,                  -- Player 2 X coordinate
-    ARENA_PLAYER2_Y = 252,                     -- Player 2 Y coordinate
-    ARENA_PLAYER2_Z = 33,                      -- Player 2 Z coordinate (estimated)
-    ARENA_PLAYER2_O = 3.14,                    -- Player 2 orientation (facing south)
+    ARENA_PLAYER1_X = -13173.569,                  -- Player 1 X coordinate
+    ARENA_PLAYER1_Y = 249.4476,                     -- Player 1 Y coordinate
+    ARENA_PLAYER1_Z = 21.857931,                      -- Player 1 Z coordinate (estimated)
+    ARENA_PLAYER1_O = 2.6241155,                       -- Player 1 orientation (facing north)
+
+    ARENA_PLAYER2_X = -13241.986,                  -- Player 2 X coordinate
+    ARENA_PLAYER2_Y = 287.11407,                     -- Player 2 Y coordinate
+    ARENA_PLAYER2_Z = 21.857931,                      -- Player 2 Z coordinate (estimated)
+    ARENA_PLAYER2_O = 5.789287,                    -- Player 2 orientation (facing south)
     
     -- Matchmaking Settings
-    MATCHMAKING_INTERVAL = 5000                -- Check for matches every 5 seconds (in milliseconds)
+    MATCHMAKING_INTERVAL = 5000,               -- Check for matches every 5 seconds (in milliseconds)
+    
+    -- Countdown Settings
+    COUNTDOWN_DURATION = 5,                    -- Countdown duration in seconds
+    ROOT_AURA_ID = 45524,                      -- Chains of Ice effect (root aura)
+    MSG_COUNTDOWN_PREFIX = "Match starts in: ",
+    MSG_FIGHT = "|cFFFFFF00FIGHT!|r"          -- Yellow colored FIGHT message
 }
 
 -- ==========================================
@@ -53,6 +60,10 @@ local activeMatches = {}
 
 -- Helper function to format and send messages
 local function sendMessage(player, message)
+    if not player then
+        return
+    end
+    
     local formattedMsg = message
     
     if CONFIG.USE_PREFIX then
@@ -103,6 +114,33 @@ local function teleportToArena(player, spawnPoint)
     else
         player:Teleport(CONFIG.ARENA_MAP_ID, CONFIG.ARENA_PLAYER2_X, CONFIG.ARENA_PLAYER2_Y, CONFIG.ARENA_PLAYER2_Z, CONFIG.ARENA_PLAYER2_O)
     end
+    
+    player:AddAura(CONFIG.ROOT_AURA_ID, player)
+end
+
+local function startCountdown(player1Guid, player2Guid, secondsLeft)
+    local player1 = GetPlayerByGUID(player1Guid)
+    local player2 = GetPlayerByGUID(player2Guid)
+    
+    if not player1 or not player2 then
+        return
+    end
+    
+    if secondsLeft > 0 then
+        local message = CONFIG.MSG_COUNTDOWN_PREFIX .. secondsLeft .. "..."
+        sendMessage(player1, message)
+        sendMessage(player2, message)
+        
+        CreateLuaEvent(function()
+            startCountdown(player1Guid, player2Guid, secondsLeft - 1)
+        end, 1000, 1)
+    else
+        sendMessage(player1, CONFIG.MSG_FIGHT)
+        sendMessage(player2, CONFIG.MSG_FIGHT)
+        
+        player1:RemoveAura(CONFIG.ROOT_AURA_ID)
+        player2:RemoveAura(CONFIG.ROOT_AURA_ID)
+    end
 end
 
 local function createMatch(player1Guid, player2Guid, player1Location, player2Location)
@@ -140,6 +178,8 @@ local function processMatchmaking()
             
             sendMessage(player1, CONFIG.MSG_MATCH_FOUND)
             sendMessage(player2, CONFIG.MSG_MATCH_FOUND)
+            
+            startCountdown(player1Guid, player2Guid, CONFIG.COUNTDOWN_DURATION)
             
             table.remove(pvpQueue, 1)
             table.remove(pvpQueue, 1)
