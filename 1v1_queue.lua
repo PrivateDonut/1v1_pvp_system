@@ -46,7 +46,10 @@ local CONFIG = {
     COUNTDOWN_DURATION = 5,                    -- Countdown duration in seconds
     ROOT_AURA_ID = 45524,                      -- Chains of Ice effect (root aura)
     MSG_COUNTDOWN_PREFIX = "Match starts in: ",
-    MSG_FIGHT = "|cFFFFFF00FIGHT!|r"          -- Yellow colored FIGHT message
+    MSG_FIGHT = "|cFFFFFF00FIGHT!|r",         -- Yellow colored FIGHT message
+    
+    -- Round End Messages
+    MSG_ROUND_WINNER = "|cFF00FF00%s wins the round!|r"  -- Green colored winner message
 }
 
 -- ==========================================
@@ -143,6 +146,43 @@ local function startCountdown(player1Guid, player2Guid, secondsLeft)
     end
 end
 
+local function findActiveMatchByPlayer(playerGuid)
+    for i, match in ipairs(activeMatches) do
+        if match.player1.guid == playerGuid or match.player2.guid == playerGuid then
+            return match, i
+        end
+    end
+    return nil
+end
+
+local function handleRoundEnd(winnerGuid, loserGuid, match)
+    local winner = GetPlayerByGUID(winnerGuid)
+    local loser = GetPlayerByGUID(loserGuid)
+    
+    if not winner or not loser then
+        return
+    end
+    
+    -- Announce the round winner
+    local winnerName = winner:GetName()
+    local message = string.format(CONFIG.MSG_ROUND_WINNER, winnerName)
+    sendMessage(winner, message)
+    sendMessage(loser, message)
+    
+    -- Resurrect the dead player
+    loser:ResurrectPlayer(1.0)
+    
+    -- Heal both players to full health and mana
+    winner:SetHealth(winner:GetMaxHealth())
+    winner:SetPower(winner:GetMaxPower(0), 0)  -- 0 = POWER_MANA
+    loser:SetHealth(loser:GetMaxHealth())
+    loser:SetPower(loser:GetMaxPower(0), 0)  -- 0 = POWER_MANA
+    
+    -- Reset cooldowns for both players
+    winner:ResetAllCooldowns()
+    loser:ResetAllCooldowns()
+end
+
 local function createMatch(player1Guid, player2Guid, player1Location, player2Location)
     local matchData = {
         player1 = {
@@ -223,7 +263,39 @@ local function OnGossipSelect(event, player, creature, sender, intid, code)
     player:GossipComplete()
 end
 
+local function OnPlayerDeath(event, killer, victim)
+    -- Check if the victim is in an active match
+    local victimGuid = victim:GetGUID()
+    local match = findActiveMatchByPlayer(victimGuid)
+    
+    if not match then
+        -- Player is not in a 1v1 match, ignore this death
+        return
+    end
+    
+    -- Determine if this is player1 or player2 who died
+    local killerGuid = killer and killer:GetGUID() or nil
+    
+    -- Verify the killer is the opponent in the match
+    local isValidKill = false
+    if match.player1.guid == victimGuid and match.player2.guid == killerGuid then
+        isValidKill = true
+    elseif match.player2.guid == victimGuid and match.player1.guid == killerGuid then
+        isValidKill = true
+    end
+    
+    if not isValidKill then
+        -- Death was not from the designated opponent (e.g., environmental or other damage)
+        return
+    end
+    
+    handleRoundEnd(killerGuid, victimGuid, match)
+end
+
 RegisterCreatureGossipEvent(CONFIG.NPC_ID, 1, OnGossipHello)
 RegisterCreatureGossipEvent(CONFIG.NPC_ID, 2, OnGossipSelect)
+
+-- Register player death event (event ID 6)
+RegisterPlayerEvent(6, OnPlayerDeath)
 
 CreateLuaEvent(processMatchmaking, CONFIG.MATCHMAKING_INTERVAL, 0)
